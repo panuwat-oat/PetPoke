@@ -17,7 +17,6 @@ PetKit แอพเตือนแค่ครั้งเดียวตอน�
 
 - 🔔 ส่ง Telegram ซ้ำๆ ทุกครั้งที่ยังเจอปัญหา
 - 📉 Backoff schedule: 15 → 30 → 60 → 120 → 120 นาที (ไม่สแปม)
-- 🌙 Quiet hours (default 23:00–07:00 Asia/Bangkok) ไม่ส่งกลางดึก
 - ✅ ส่งข้อความ "กลับสู่ปกติแล้ว" ครั้งเดียวเมื่อปัญหาหาย
 - 🎯 หลาย alert type ต่ออุปกรณ์ — แต่ละ alert มี backoff/state แยกกัน
 - 🔐 ใช้ secondary PetKit account ไม่ขัดกับแอพมือถือบน account หลัก
@@ -162,9 +161,6 @@ INFO petpoke: Pura MAX still full; next alert at 15:30 14/05/2026
    |---|---|---|
    | `PETKIT_REGION` | `TH` | country code ของ account |
    | `PETKIT_TIMEZONE` | `Asia/Bangkok` | timezone สำหรับเวลาใน message |
-   | `QUIET_HOURS_ENABLED` | `true` | ปิดแจ้งเตือนช่วงดึก |
-   | `QUIET_HOURS_START` | `23:00` | เริ่ม quiet (24h format) |
-   | `QUIET_HOURS_END` | `07:00` | จบ quiet |
    | `DEBUG_LOG_RAW` | `false` | ตั้ง `true` ดูสถานะ raw รอบแรก |
 
 6. ไปที่แท็บ `Actions` → เลือก workflow `PetKit Poll` → กด `Run workflow` เพื่อทดสอบ manual ก่อน

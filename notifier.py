@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -26,9 +26,6 @@ LOG = logging.getLogger("petpoke")
 
 BACKOFF_MINUTES: tuple[int, ...] = (15, 30, 60, 120)
 BACKOFF_CAP_MINUTES: int = 120
-
-DEFAULT_QUIET_START = time(23, 0)
-DEFAULT_QUIET_END = time(7, 0)
 
 # label_active = ข้อความตอนเริ่ม / ส่งซ้ำ
 # label_cleared = ข้อความตอนหายเป็นปกติ
@@ -79,9 +76,6 @@ class Config:
     telegram_bot_token: str
     telegram_chat_id: str
     state_file: Path
-    quiet_hours_enabled: bool
-    quiet_start: time
-    quiet_end: time
     debug_log_raw: bool
 
     @classmethod
@@ -101,14 +95,6 @@ class Config:
                 f"Missing required environment variables: {', '.join(missing)}"
             )
 
-        quiet_enabled = _env_bool("QUIET_HOURS_ENABLED", default=True)
-        quiet_start = _parse_hhmm(
-            os.environ.get("QUIET_HOURS_START", "23:00"), DEFAULT_QUIET_START
-        )
-        quiet_end = _parse_hhmm(
-            os.environ.get("QUIET_HOURS_END", "07:00"), DEFAULT_QUIET_END
-        )
-
         return cls(
             petkit_username=os.environ["PETKIT_USERNAME"],
             petkit_password=os.environ["PETKIT_PASSWORD"],
@@ -117,9 +103,6 @@ class Config:
             telegram_bot_token=os.environ["TELEGRAM_BOT_TOKEN"],
             telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
             state_file=Path(os.environ.get("STATE_FILE", "state.json")),
-            quiet_hours_enabled=quiet_enabled,
-            quiet_start=quiet_start,
-            quiet_end=quiet_end,
             debug_log_raw=_env_bool("DEBUG_LOG_RAW", default=False),
         )
 
@@ -219,15 +202,6 @@ def _maybe_int(value: Any) -> int | None:
         return None
 
 
-def _parse_hhmm(raw: str, fallback: time) -> time:
-    try:
-        hour_str, minute_str = raw.split(":", 1)
-        return time(int(hour_str), int(minute_str))
-    except (ValueError, AttributeError):
-        LOG.warning("Could not parse time %r, using fallback %s", raw, fallback)
-        return fallback
-
-
 def load_state(path: Path) -> StateStore:
     if not path.exists():
         return StateStore()
@@ -241,15 +215,6 @@ def load_state(path: Path) -> StateStore:
 def save_state(path: Path, store: StateStore) -> None:
     payload = json.dumps(store.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
     path.write_text(payload + "\n", encoding="utf-8")
-
-
-def is_in_quiet_hours(now: datetime, start: time, end: time) -> bool:
-    current = now.time()
-    if start == end:
-        return False
-    if start < end:
-        return start <= current < end
-    return current >= start or current < end
 
 
 def backoff_minutes_for(alert_count: int) -> int:
@@ -659,9 +624,6 @@ async def process_alerts(
 
     now_ms = int(now_utc.timestamp() * 1000)
     now_local = now_utc.astimezone(tz)
-    in_quiet = config.quiet_hours_enabled and is_in_quiet_hours(
-        now_local, config.quiet_start, config.quiet_end
-    )
 
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=20)
@@ -678,7 +640,6 @@ async def process_alerts(
                     state=state,
                     now_ms=now_ms,
                     now_local=now_local,
-                    in_quiet=in_quiet,
                 )
             else:
                 await _handle_cleared(
@@ -689,7 +650,6 @@ async def process_alerts(
                     store=store,
                     now_ms=now_ms,
                     now_local=now_local,
-                    in_quiet=in_quiet,
                 )
 
 
@@ -701,7 +661,6 @@ async def _handle_active(
     state: AlertState,
     now_ms: int,
     now_local: datetime,
-    in_quiet: bool,
 ) -> None:
     is_first_alert = not state.is_active or state.alert_count == 0
     due = is_first_alert or (
@@ -713,14 +672,6 @@ async def _handle_active(
             alert.device_name,
             alert.code,
             _format_eta(state.next_alert_at, now_local.tzinfo),
-        )
-        return
-
-    if in_quiet:
-        LOG.info(
-            "%s [%s] active but inside quiet hours; deferring",
-            alert.device_name,
-            alert.code,
         )
         return
 
@@ -768,18 +719,8 @@ async def _handle_cleared(
     store: StateStore,
     now_ms: int,
     now_local: datetime,
-    in_quiet: bool,
 ) -> None:
     if not state.is_active:
-        return
-
-    if in_quiet:
-        LOG.info(
-            "%s [%s] cleared during quiet hours; resetting silently",
-            alert.device_name,
-            alert.code,
-        )
-        store.reset(alert.key)
         return
 
     message = format_cleared_message(alert, state, now_local)

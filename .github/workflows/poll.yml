@@ -36,9 +36,6 @@ jobs:
           PETKIT_TIMEZONE: ${{ vars.PETKIT_TIMEZONE || 'Asia/Bangkok' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          QUIET_HOURS_ENABLED: ${{ vars.QUIET_HOURS_ENABLED || 'true' }}
-          QUIET_HOURS_START: ${{ vars.QUIET_HOURS_START || '23:00' }}
-          QUIET_HOURS_END: ${{ vars.QUIET_HOURS_END || '07:00' }}
           DEBUG_LOG_RAW: ${{ vars.DEBUG_LOG_RAW || 'false' }}
         run: python notifier.py
 
