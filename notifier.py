@@ -36,6 +36,9 @@ RULE_LABELS: dict[str, tuple[str, str, str]] = {
     "water_low": ("\U0001F6B0", "น้ำในน้ำพุใกล้หมด", "เติมน้ำเรียบร้อย"),
     "filter_change": ("\U0001F9FD", "ใกล้ต้องเปลี่ยน filter น้ำพุแล้ว", "เปลี่ยน filter เรียบร้อย"),
     "battery_low": ("\U0001F50B", "แบตเตอรี่ต่ำ", "แบตเตอรี่กลับมาปกติแล้ว"),
+    "device_error": ("⚠️", "พบความผิดปกติของอุปกรณ์", "อุปกรณ์กลับสู่สภาพปกติแล้ว"),
+    "device_offline": ("\U0001F4E1", "อุปกรณ์ออฟไลน์/ไม่ตอบสนอง", "อุปกรณ์กลับมาออนไลน์แล้ว"),
+    "pet_error": ("\U0001F198", "ตรวจพบความผิดปกติของน้อง! ตรวจสอบด่วน", "น้องปลอดภัยแล้ว"),
 }
 
 # One product photo per device (PetKit Shopify CDN URLs).
@@ -49,22 +52,9 @@ DEVICE_PHOTOS: dict[str, str] = {
     "WaterFountain": "https://petkit.com/cdn/shop/files/eversweet-max-cordless-pet-water-fountain-app-control.png",
 }
 
-# Map alert codes to the device class so we can look up the photo.
-_ALERT_TO_DEVICE_CLASS: dict[str, str] = {
-    "box_full": "Litter",
-    "food_empty": "Feeder",
-    "food_low": "Feeder",
-    "water_low": "WaterFountain",
-    "filter_change": "WaterFountain",
-    "battery_low": "WaterFountain",
-}
 
-
-def photo_for_alert(code: str) -> str | None:
-    device_class = _ALERT_TO_DEVICE_CLASS.get(code)
-    if device_class is None:
-        return None
-    return DEVICE_PHOTOS.get(device_class)
+def photo_for_alert(alert: "Alert") -> str | None:
+    return DEVICE_PHOTOS.get(alert.device_class)
 
 
 @dataclass
@@ -152,6 +142,7 @@ class Alert:
     device_name: str
     code: str
     is_active: bool
+    device_class: str = ""  # e.g. Litter, Feeder, WaterFountain — used for photo lookup
     detail: str = ""
     info_lines: list[str] = field(default_factory=list)
 
@@ -296,28 +287,126 @@ def extract_alerts(device: Any, debug_log_raw: bool) -> list[Alert]:
     return []
 
 
+def _extract_common_problem_alerts(
+    device: Any, device_id: str, name: str, device_class: str
+) -> list[Alert]:
+    """
+    Cross-device alerts: hardware errors, offline state, and (litter only)
+    pet_error. Reads several optional fields defensively so a missing one
+    just gets reported as "no signal" (not a false-active alert).
+    """
+    alerts: list[Alert] = []
+    state = _read_attr(device, "state") or {}
+
+    # --- device_error: PetKit returns explicit error info -----------------
+    error_code = _read_attr(state, "error_code")
+    error_msg = _read_attr(state, "error_msg")
+    error_level = _read_attr(state, "error_level")
+    breakdown = _read_attr(device, "breakdown_warning")
+
+    has_state_error = bool(error_code) or bool(error_msg)
+    has_breakdown = isinstance(breakdown, (int, float)) and breakdown > 0
+    is_errored = has_state_error or has_breakdown
+
+    info: list[str] = []
+    if error_code not in (None, 0, "", "0"):
+        info.append(f"\U0001F6A8 รหัส error: <b>{_html_escape(str(error_code))}</b>")
+    if error_msg:
+        info.append(f"\U0001F4DD ข้อความ: <b>{_html_escape(str(error_msg))}</b>")
+    if error_level not in (None, 0, "", "0"):
+        info.append(f"\U0001F4CA ระดับ: <b>{_html_escape(str(error_level))}</b>")
+    if has_breakdown:
+        info.append(f"⚙️ breakdown_warning = <b>{int(breakdown)}</b>")
+
+    alerts.append(
+        Alert(
+            device_id=device_id,
+            device_name=name,
+            device_class=device_class,
+            code="device_error",
+            is_active=is_errored,
+            detail=(
+                f"error_code={error_code} error_msg={error_msg} "
+                f"breakdown_warning={breakdown}"
+            ),
+            info_lines=info,
+        )
+    )
+
+    # --- device_offline: PetKit cloud explicitly says device dropped off --
+    offline_ts = _read_attr(state, "offline_time")
+    is_offline = offline_ts is not None and offline_ts != 0
+    offline_info: list[str] = []
+    if is_offline:
+        try:
+            offline_dt = datetime.fromtimestamp(int(offline_ts), tz=timezone.utc)
+            offline_info.append(
+                f"\U0001F551 หลุดเมื่อ: <b>{offline_dt.strftime('%H:%M %d/%m/%Y UTC')}</b>"
+            )
+        except (TypeError, ValueError, OSError):
+            offline_info.append(f"\U0001F551 offline_time = {offline_ts}")
+    alerts.append(
+        Alert(
+            device_id=device_id,
+            device_name=name,
+            device_class=device_class,
+            code="device_offline",
+            is_active=is_offline,
+            detail=f"offline_time={offline_ts}",
+            info_lines=offline_info,
+        )
+    )
+
+    # --- pet_error: Pura MAX safety sensor -----------------------------
+    if device_class == "Litter":
+        pet_error = _coerce_bool(_read_attr(state, "pet_error"))
+        if pet_error is not None:
+            alerts.append(
+                Alert(
+                    device_id=device_id,
+                    device_name=name,
+                    device_class=device_class,
+                    code="pet_error",
+                    is_active=pet_error,
+                    detail=f"pet_error={pet_error}",
+                    info_lines=[
+                        "\U0001F43E ตรวจสอบน้องในกล่องทันที — อาจติดหรือมีปัญหาด้านความปลอดภัย",
+                    ]
+                    if pet_error
+                    else [],
+                )
+            )
+
+    return alerts
+
+
 def _extract_litter_alerts(device_id: str, name: str, device: Any) -> list[Alert]:
     state = _read_attr(device, "state", "device_detail", "deviceDetail")
+    alerts: list[Alert] = []
+
     raw = _read_attr(state, "box_full", "boxFull", "is_full", "isFull")
     is_full = _coerce_bool(raw)
     if is_full is None:
         ratio = _read_attr(state, "litter_percent", "sand_percent")
         if isinstance(ratio, (int, float)):
             is_full = ratio >= 90
-    if is_full is None:
-        LOG.warning("Litter %s (%s): no box_full field found", name, device_id)
-        return []
-
-    return [
-        Alert(
-            device_id=device_id,
-            device_name=name,
-            code="box_full",
-            is_active=is_full,
-            detail=f"box_full={raw}",
-            info_lines=[],
+    if is_full is not None:
+        alerts.append(
+            Alert(
+                device_id=device_id,
+                device_name=name,
+                device_class="Litter",
+                code="box_full",
+                is_active=is_full,
+                detail=f"box_full={raw}",
+                info_lines=[],
+            )
         )
-    ]
+    else:
+        LOG.warning("Litter %s (%s): no box_full field found", name, device_id)
+
+    alerts.extend(_extract_common_problem_alerts(device, device_id, name, "Litter"))
+    return alerts
 
 
 def _extract_feeder_alerts(device_id: str, name: str, device: Any) -> list[Alert]:
@@ -348,6 +437,7 @@ def _extract_feeder_alerts(device_id: str, name: str, device: Any) -> list[Alert
             Alert(
                 device_id=device_id,
                 device_name=name,
+                device_class="Feeder",
                 code="food_empty",
                 is_active=is_empty,
                 detail=f"food={food}",
@@ -358,6 +448,7 @@ def _extract_feeder_alerts(device_id: str, name: str, device: Any) -> list[Alert
             Alert(
                 device_id=device_id,
                 device_name=name,
+                device_class="Feeder",
                 code="food_low",
                 is_active=is_low,
                 detail=f"food={food}",
@@ -365,6 +456,7 @@ def _extract_feeder_alerts(device_id: str, name: str, device: Any) -> list[Alert
             )
         )
 
+    alerts.extend(_extract_common_problem_alerts(device, device_id, name, "Feeder"))
     return alerts
 
 
@@ -390,6 +482,7 @@ def _extract_water_alerts(device_id: str, name: str, device: Any) -> list[Alert]
             Alert(
                 device_id=device_id,
                 device_name=name,
+                device_class="WaterFountain",
                 code="water_low",
                 is_active=lack > 0,
                 detail=f"lack_warning={lack}",
@@ -397,7 +490,7 @@ def _extract_water_alerts(device_id: str, name: str, device: Any) -> list[Alert]
             )
         )
 
-    # filter_change: show filter percentage + remaining days (if valid).
+    # filter_change set the device_class below; first add filter_change alert.
     if filter_pct is not None or filter_warn is not None:
         needs_change = False
         details: list[str] = []
@@ -421,6 +514,7 @@ def _extract_water_alerts(device_id: str, name: str, device: Any) -> list[Alert]
             Alert(
                 device_id=device_id,
                 device_name=name,
+                device_class="WaterFountain",
                 code="filter_change",
                 is_active=needs_change,
                 detail=", ".join(details),
@@ -450,6 +544,7 @@ def _extract_water_alerts(device_id: str, name: str, device: Any) -> list[Alert]
             Alert(
                 device_id=device_id,
                 device_name=name,
+                device_class="WaterFountain",
                 code="battery_low",
                 is_active=low_batt > 0,
                 detail=(
@@ -459,6 +554,10 @@ def _extract_water_alerts(device_id: str, name: str, device: Any) -> list[Alert]
                 info_lines=battery_info,
             )
         )
+
+    alerts.extend(
+        _extract_common_problem_alerts(device, device_id, name, "WaterFountain")
+    )
     return alerts
 
 
@@ -685,7 +784,7 @@ async def _handle_active(
         next_alert_at=now_ms + backoff_minutes_for(tentative_count) * 60_000,
     )
     message = format_active_message(alert, tentative, now_local)
-    photo_url = photo_for_alert(alert.code)
+    photo_url = photo_for_alert(alert)
 
     sent = await send_telegram(session, config, message, photo_url=photo_url)
     if not sent:
@@ -724,7 +823,7 @@ async def _handle_cleared(
         return
 
     message = format_cleared_message(alert, state, now_local)
-    photo_url = photo_for_alert(alert.code)
+    photo_url = photo_for_alert(alert)
     sent = await send_telegram(session, config, message, photo_url=photo_url)
     if sent:
         LOG.info(

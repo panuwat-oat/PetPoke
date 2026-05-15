@@ -1,4 +1,20 @@
 {
+  "100002302:device_error": {
+    "alert_count": 0,
+    "device_name": "YUMSHARE SOLO WITH CAMERA",
+    "first_alert_ts": null,
+    "is_active": false,
+    "last_alert_ts": null,
+    "next_alert_at": null
+  },
+  "100002302:device_offline": {
+    "alert_count": 0,
+    "device_name": "YUMSHARE SOLO WITH CAMERA",
+    "first_alert_ts": null,
+    "is_active": false,
+    "last_alert_ts": null,
+    "next_alert_at": null
+  },
   "100002302:food_empty": {
     "alert_count": 0,
     "device_name": "YUMSHARE SOLO WITH CAMERA",
@@ -23,6 +39,22 @@
     "last_alert_ts": null,
     "next_alert_at": null
   },
+  "1000028131:device_error": {
+    "alert_count": 0,
+    "device_name": "EVERSWEET MAX (CORDLESS)",
+    "first_alert_ts": null,
+    "is_active": false,
+    "last_alert_ts": null,
+    "next_alert_at": null
+  },
+  "1000028131:device_offline": {
+    "alert_count": 0,
+    "device_name": "EVERSWEET MAX (CORDLESS)",
+    "first_alert_ts": null,
+    "is_active": false,
+    "last_alert_ts": null,
+    "next_alert_at": null
+  },
   "1000028131:filter_change": {
     "alert_count": 0,
     "device_name": "EVERSWEET MAX (CORDLESS)",
@@ -40,6 +72,30 @@
     "next_alert_at": null
   },
   "1000034011:box_full": {
+    "alert_count": 0,
+    "device_name": "PETKIT PURAMAX",
+    "first_alert_ts": null,
+    "is_active": false,
+    "last_alert_ts": null,
+    "next_alert_at": null
+  },
+  "1000034011:device_error": {
+    "alert_count": 0,
+    "device_name": "PETKIT PURAMAX",
+    "first_alert_ts": null,
+    "is_active": false,
+    "last_alert_ts": null,
+    "next_alert_at": null
+  },
+  "1000034011:device_offline": {
+    "alert_count": 0,
+    "device_name": "PETKIT PURAMAX",
+    "first_alert_ts": null,
+    "is_active": false,
+    "last_alert_ts": null,
+    "next_alert_at": null
+  },
+  "1000034011:pet_error": {
     "alert_count": 0,
     "device_name": "PETKIT PURAMAX",
     "first_alert_ts": null,

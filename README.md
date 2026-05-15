@@ -32,6 +32,9 @@ PetKit แอพเตือนแค่ครั้งเดียวตอน�
 | 🚰 **น้ำพุ** | น้ำใกล้หมด | `lack_warning > 0` |
 | 🧽 **น้ำพุ** | filter ใกล้เปลี่ยน | `filter_warning > 0` หรือ `filter_percent < 10` |
 | 🔋 **น้ำพุ** | แบตเตอรี่ต่ำ | `low_battery > 0` |
+| ⚠️ **ทุก device** | พบ error ของอุปกรณ์ | `state.error_code` มีค่า หรือ `breakdown_warning > 0` |
+| 📡 **ทุก device** | ออฟไลน์/ไม่ตอบสนอง | `state.offline_time` มีค่า |
+| 🆘 **Pura MAX** | น้องอาจติดในกล่อง (เซ็นเซอร์ตรวจพบ) | `state.pet_error == true` |
 
 ## Backoff schedule (ต่อ alert type ต่อ device)
 
