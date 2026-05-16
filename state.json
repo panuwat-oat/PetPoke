@@ -64,12 +64,12 @@
     "next_alert_at": null
   },
   "1000028131:water_low": {
-    "alert_count": 2,
+    "alert_count": 3,
     "device_name": "EVERSWEET MAX (CORDLESS)",
     "first_alert_ts": 1778890520443,
     "is_active": true,
-    "last_alert_ts": 1778891421284,
-    "next_alert_at": 1778893221284
+    "last_alert_ts": 1778893225224,
+    "next_alert_at": 1778896825224
   },
   "1000034011:box_full": {
     "alert_count": 0,
