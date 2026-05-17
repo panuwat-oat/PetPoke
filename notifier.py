@@ -27,6 +27,10 @@ LOG = logging.getLogger("petpoke")
 BACKOFF_MINUTES: tuple[int, ...] = (15, 30, 60, 120)
 BACKOFF_CAP_MINUTES: int = 120
 
+# Error codes treated as non-urgent — device_error will NOT fire for these.
+# `blk_d` = food piled up at the feeder dispenser chute (minor maintenance).
+IGNORED_ERROR_CODES: frozenset[str] = frozenset({"blk_d"})
+
 # label_active = ข้อความตอนเริ่ม / ส่งซ้ำ
 # label_cleared = ข้อความตอนหายเป็นปกติ
 RULE_LABELS: dict[str, tuple[str, str, str]] = {
@@ -303,6 +307,18 @@ def _extract_common_problem_alerts(
     error_msg = _read_attr(state, "error_msg")
     error_level = _read_attr(state, "error_level")
     breakdown = _read_attr(device, "breakdown_warning")
+
+    # Suppress non-urgent error codes (treated as no error at all).
+    if (
+        error_code is not None
+        and str(error_code).strip().lower() in IGNORED_ERROR_CODES
+    ):
+        LOG.info(
+            "%s: ignoring non-urgent error code %r", name, error_code
+        )
+        error_code = None
+        error_msg = None
+        error_level = None
 
     has_state_error = bool(error_code) or bool(error_msg)
     has_breakdown = isinstance(breakdown, (int, float)) and breakdown > 0
