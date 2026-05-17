@@ -1,11 +1,11 @@
 {
   "100002302:device_error": {
-    "alert_count": 1,
+    "alert_count": 2,
     "device_name": "YUMSHARE SOLO WITH CAMERA",
     "first_alert_ts": 1779023720892,
     "is_active": true,
-    "last_alert_ts": 1779023720892,
-    "next_alert_at": 1779024620892
+    "last_alert_ts": 1779024621603,
+    "next_alert_at": 1779026421603
   },
   "100002302:device_offline": {
     "alert_count": 0,
