@@ -32,12 +32,12 @@
     "next_alert_at": null
   },
   "1000028131:battery_low": {
-    "alert_count": 3,
+    "alert_count": 4,
     "device_name": "EVERSWEET MAX (CORDLESS)",
     "first_alert_ts": 1779148823203,
     "is_active": true,
-    "last_alert_ts": 1779152424959,
-    "next_alert_at": 1779156024959
+    "last_alert_ts": 1779156028429,
+    "next_alert_at": 1779163228429
   },
   "1000028131:device_error": {
     "alert_count": 0,
