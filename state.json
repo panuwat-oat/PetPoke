@@ -72,20 +72,20 @@
     "next_alert_at": null
   },
   "1000034011:box_full": {
-    "alert_count": 3,
+    "alert_count": 4,
     "device_name": "PETKIT PURAMAX",
     "first_alert_ts": 1779482720026,
     "is_active": true,
-    "last_alert_ts": 1779486247879,
-    "next_alert_at": 1779489847879
+    "last_alert_ts": 1779489859950,
+    "next_alert_at": 1779497059950
   },
   "1000034011:device_error": {
-    "alert_count": 3,
+    "alert_count": 4,
     "device_name": "PETKIT PURAMAX",
     "first_alert_ts": 1779482720026,
     "is_active": true,
-    "last_alert_ts": 1779486247879,
-    "next_alert_at": 1779489847879
+    "last_alert_ts": 1779489859950,
+    "next_alert_at": 1779497059950
   },
   "1000034011:device_offline": {
     "alert_count": 0,
