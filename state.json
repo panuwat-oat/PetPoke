@@ -65,27 +65,27 @@
   },
   "1000028131:water_low": {
     "alert_count": 0,
-    "device_name": "",
+    "device_name": "EVERSWEET MAX (CORDLESS)",
     "first_alert_ts": null,
     "is_active": false,
     "last_alert_ts": null,
     "next_alert_at": null
   },
   "1000034011:box_full": {
-    "alert_count": 2,
+    "alert_count": 3,
     "device_name": "PETKIT PURAMAX",
     "first_alert_ts": 1779989425187,
     "is_active": true,
-    "last_alert_ts": 1779990325661,
-    "next_alert_at": 1779992125661
+    "last_alert_ts": 1779992126628,
+    "next_alert_at": 1779995726628
   },
   "1000034011:device_error": {
-    "alert_count": 2,
+    "alert_count": 3,
     "device_name": "PETKIT PURAMAX",
     "first_alert_ts": 1779989425187,
     "is_active": true,
-    "last_alert_ts": 1779990325661,
-    "next_alert_at": 1779992125661
+    "last_alert_ts": 1779992126628,
+    "next_alert_at": 1779995726628
   },
   "1000034011:device_offline": {
     "alert_count": 0,
