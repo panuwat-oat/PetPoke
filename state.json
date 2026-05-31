@@ -16,12 +16,12 @@
     "next_alert_at": null
   },
   "100002302:food_empty": {
-    "alert_count": 1,
+    "alert_count": 2,
     "device_name": "YUMSHARE SOLO WITH CAMERA",
     "first_alert_ts": 1780240518620,
     "is_active": true,
-    "last_alert_ts": 1780240518620,
-    "next_alert_at": 1780241418620
+    "last_alert_ts": 1780241424568,
+    "next_alert_at": 1780243224568
   },
   "100002302:food_low": {
     "alert_count": 0,
