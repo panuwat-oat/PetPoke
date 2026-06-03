@@ -80,12 +80,12 @@
     "next_alert_at": null
   },
   "1000034011:device_error": {
-    "alert_count": 6,
+    "alert_count": 7,
     "device_name": "PETKIT PURAMAX",
     "first_alert_ts": 1780450223508,
     "is_active": true,
-    "last_alert_ts": 1780473630768,
-    "next_alert_at": 1780480830768
+    "last_alert_ts": 1780481723668,
+    "next_alert_at": 1780488923668
   },
   "1000034011:device_offline": {
     "alert_count": 0,
