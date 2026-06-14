@@ -197,7 +197,19 @@ def _maybe_int(value: Any) -> int | None:
         return None
 
 
+def _state_bucket() -> str | None:
+    """GCS bucket for state, if running on Cloud Run; None → local file."""
+    return os.environ.get("STATE_BUCKET") or None
+
+
+def _state_object() -> str:
+    return os.environ.get("STATE_OBJECT", "state.json")
+
+
 def load_state(path: Path) -> StateStore:
+    bucket = _state_bucket()
+    if bucket:
+        return _load_state_gcs(bucket, _state_object())
     if not path.exists():
         return StateStore()
     try:
@@ -209,7 +221,34 @@ def load_state(path: Path) -> StateStore:
 
 def save_state(path: Path, store: StateStore) -> None:
     payload = json.dumps(store.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
+    bucket = _state_bucket()
+    if bucket:
+        _save_state_gcs(bucket, _state_object(), payload + "\n")
+        return
     path.write_text(payload + "\n", encoding="utf-8")
+
+
+def _load_state_gcs(bucket: str, obj: str) -> StateStore:
+    from google.cloud import storage  # imported lazily; only needed on Cloud Run
+
+    blob = storage.Client().bucket(bucket).blob(obj)
+    if not blob.exists():
+        return StateStore()
+    try:
+        return StateStore.from_dict(json.loads(blob.download_as_text() or "{}"))
+    except Exception as exc:  # noqa: BLE001 — never let a bad blob crash the poll
+        LOG.warning(
+            "Could not read state gs://%s/%s (%s); starting empty", bucket, obj, exc
+        )
+        return StateStore()
+
+
+def _save_state_gcs(bucket: str, obj: str, payload: str) -> None:
+    from google.cloud import storage
+
+    storage.Client().bucket(bucket).blob(obj).upload_from_string(
+        payload, content_type="application/json"
+    )
 
 
 def backoff_minutes_for(alert_count: int) -> int:
@@ -927,6 +966,7 @@ async def main_async() -> int:
     now_utc = datetime.now(tz=timezone.utc)
 
     store = load_state(config.state_file)
+    state_before = json.dumps(store.to_dict(), sort_keys=True, ensure_ascii=False)
 
     try:
         alerts = await fetch_alerts(config)
@@ -937,7 +977,13 @@ async def main_async() -> int:
     try:
         await process_alerts(config, store, alerts, now_utc, tz)
     finally:
-        save_state(config.state_file, store)
+        # Only persist when something actually changed. On Cloud Run this keeps
+        # GCS writes near zero (well inside the free tier) instead of one per poll.
+        state_after = json.dumps(store.to_dict(), sort_keys=True, ensure_ascii=False)
+        if state_after != state_before:
+            save_state(config.state_file, store)
+        else:
+            LOG.info("State unchanged; skipping write")
 
     return 0
 

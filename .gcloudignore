@@ -1,0 +1,12 @@
+# Source upload exclusions for `gcloud run deploy --source`.
+.git/
+.github/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+state.json
+README.md
+CLAUDE.md
+.DS_Store
