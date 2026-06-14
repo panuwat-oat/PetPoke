@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-PetPoke polls the PetKit cloud and sends **repeating** Telegram alerts on a backoff schedule until a device problem is resolved (PetKit's own app only notifies once). Runs as a GitHub Actions cron job (`*/15` — but expect 20–45 min real spacing due to GHA cron lag). All logic lives in one file, `notifier.py`, by design — so the platform (GHA → Raspberry Pi → Cloudflare Workers) is easy to swap.
+PetPoke polls the PetKit cloud and sends **repeating** Telegram alerts on a backoff schedule until a device problem is resolved (PetKit's own app only notifies once). Core poll logic lives in one file, `notifier.py`, by design — so the runtime platform is easy to swap.
+
+**Runtime: Google Cloud Run + Cloud Scheduler** (project `petpoke-notifier`, region `us-central1`). Cloud Scheduler hits the service's `/poll` endpoint every 15 min on a precise schedule. The old GitHub Actions cron (`poll.yml`) is **disabled** — it drifted 20–45 min due to GHA cron lag, which was the reason for migrating. The workflow file is removed; `notifier.py` stays platform-agnostic so it can still run anywhere (local, Pi, etc.).
 
 The README is in Thai and is the authoritative setup/operations guide. User-facing Telegram strings are intentionally Thai.
 
@@ -20,9 +22,25 @@ set -a; source .env; set +a; python notifier.py   # needs .env (copy from .env.e
 DEBUG_LOG_RAW=true python notifier.py
 ```
 
-No test suite, linter, or build step exists. Python 3.11 (GHA pins `3.11`; uses `zoneinfo`, `from __future__ import annotations`).
+No test suite, linter, or build step exists. Python 3.11 (uses `zoneinfo`, `from __future__ import annotations`).
 
-Required env: `PETKIT_USERNAME`, `PETKIT_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Optional: `PETKIT_REGION` (default `TH`), `PETKIT_TIMEZONE` (default `Asia/Bangkok`), `STATE_FILE` (default `state.json`), `DEBUG_LOG_RAW`.
+```bash
+# Cloud Run — redeploy after code changes (Cloud Build buildpacks, no Dockerfile)
+gcloud run deploy petpoke --source . --project=petpoke-notifier --region=us-central1 \
+  --no-allow-unauthenticated --memory=512Mi --timeout=120 --max-instances=1
+
+# Tail logs
+gcloud logging read 'resource.type=cloud_run_revision AND resource.labels.service_name=petpoke' \
+  --project=petpoke-notifier --limit=30 --freshness=15m --format="value(timestamp,textPayload)"
+
+# Manually fire a poll (uses the scheduler's OIDC identity)
+gcloud scheduler jobs run petpoke-poll --project=petpoke-notifier --location=us-central1
+
+# Rotate a secret value
+printf %s "NEW_VALUE" | gcloud secrets versions add TELEGRAM_BOT_TOKEN --project=petpoke-notifier --data-file=-
+```
+
+Required env: `PETKIT_USERNAME`, `PETKIT_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Optional: `PETKIT_REGION` (default `TH`), `PETKIT_TIMEZONE` (default `Asia/Bangkok`), `STATE_FILE` (default `state.json`), `DEBUG_LOG_RAW`. Cloud-Run-only: `STATE_BUCKET` (enables the GCS state backend), `STATE_OBJECT` (default `state.json`). On Cloud Run the four required vars come from Secret Manager (`--set-secrets`); the rest are plain env vars.
 
 ## Architecture
 
@@ -51,6 +69,18 @@ One poll = login via `pypetkitapi` → `extract_alerts` per device → `process_
 - **New alert on an existing device**: emit a new `Alert(code=...)` from that device's extractor (both active and inactive states) + add the `code` to `RULE_LABELS`.
 - **New device type**: add `_extract_<type>_alerts`, dispatch it in `extract_alerts` by class name, add a `DEVICE_PHOTOS` entry, append `_extract_common_problem_alerts(...)`.
 
-## State commits
+## Cloud Run wrapper
 
-GHA auto-commits `state.json` after each run with `chore: update state [skip ci]` (the `[skip ci]` prevents a cron loop). The frequent state commits in `git log` are normal noise. `state.json` is tracked, not gitignored — it's the cross-run persistence layer.
+`main.py` is a thin Flask entrypoint that exposes the one-shot poll as HTTP: `GET /` (health) and `GET|POST /poll` (runs one `notifier.main_async()` cycle, returns JSON status + exit code). `Procfile` runs it under gunicorn (`web: gunicorn ... main:app`). `.gcloudignore` trims the source upload. None of this affects a local `python notifier.py` run — the wrapper is additive.
+
+Deploy is `gcloud run deploy --source .` (Cloud Build buildpacks → Artifact Registry repo `cloud-run-source-deploy`). The service is **private** (`--no-allow-unauthenticated`); Cloud Scheduler authenticates with an OIDC token (identity = the default compute service account, granted `roles/run.invoker` on the service + `secretAccessor` on the four secrets + `storage.objectAdmin` on the state bucket). Don't make it public — `/poll` triggers PetKit logins and Telegram sends, so an open endpoint is an abuse vector. `--max-instances=1` keeps polls from racing on shared GCS state.
+
+## State backend
+
+Two backends, selected at runtime in `load_state`/`save_state`:
+- **Local file** (default): `state.json`, used by `python notifier.py`.
+- **GCS** (Cloud Run): active when `STATE_BUCKET` is set — reads/writes `gs://$STATE_BUCKET/$STATE_OBJECT` (bucket `petpoke-notifier-state`, object `state.json`). `google-cloud-storage` is imported lazily inside the GCS helpers so the local path needs no GCP deps.
+
+`main_async` snapshots the serialized store before the poll and **skips the write entirely when nothing changed** (`State unchanged; skipping write` log line). This keeps GCS Class-A writes to a handful per day, well inside the free tier. Don't remove the change-detection guard — without it every 15-min poll writes, ~2,880/mo.
+
+The tracked `state.json` in git is now only a **historical artifact / local-run seed** — the GHA auto-commit (`chore: update state [skip ci]`) no longer runs since the workflow is disabled. The live cross-run state lives in GCS. The frequent state commits in `git log` are pre-migration noise. When migrating runtimes, seed the new backend from the current `state.json` (e.g. `gcloud storage cp state.json gs://petpoke-notifier-state/state.json`) so already-notified active alerts don't re-fire.
