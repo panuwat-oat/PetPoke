@@ -75,6 +75,8 @@ One poll = login via `pypetkitapi` → `extract_alerts` per device → `process_
 
 Deploy is `gcloud run deploy --source .` (Cloud Build buildpacks → Artifact Registry repo `cloud-run-source-deploy`). The service is **private** (`--no-allow-unauthenticated`); Cloud Scheduler authenticates with an OIDC token (identity = the default compute service account, granted `roles/run.invoker` on the service + `secretAccessor` on the four secrets + `storage.objectAdmin` on the state bucket). Don't make it public — `/poll` triggers PetKit logins and Telegram sends, so an open endpoint is an abuse vector. `--max-instances=1` keeps polls from racing on shared GCS state.
 
+A Cloud Billing **budget** `petpoke-charge-alert` (10 THB, scoped to this project only) emails the billing admin at 10/50/100% of actual spend — a tripwire for leaving the free tier. Expected steady-state cost is 0. The billing account currency is **THB**; `gcloud billing budgets create` rejects a `USD` amount with a vague `INVALID_ARGUMENT`.
+
 ## State backend
 
 Two backends, selected at runtime in `load_state`/`save_state`:
