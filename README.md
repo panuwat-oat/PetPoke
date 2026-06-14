@@ -2,16 +2,16 @@
 
 PetKit แอพเตือนแค่ครั้งเดียวตอนถังเต็ม / อาหารหมด / น้ำใกล้หมด ฯลฯ —
 ออกจากบ้านทีกลับมาเจอน้องล้นกล่องหรือชามเปล่า 😩
-โปรเจกต์นี้รัน script เล็กๆ ทุก ~15 นาทีบน GitHub Actions เพื่อเช็คสถานะ
-อุปกรณ์ทุกตัว แล้วยิง Telegram เตือนซ้ำตามตาราง backoff จนกว่าปัญหาจะหาย
+โปรเจกต์นี้รัน script เล็กๆ ทุก 15 นาทีบน Google Cloud Run (สั่งโดย Cloud Scheduler)
+เพื่อเช็คสถานะอุปกรณ์ทุกตัว แล้วยิง Telegram เตือนซ้ำตามตาราง backoff จนกว่าปัญหาจะหาย
 
 **รองรับ:** Pura MAX (ถังขยะ), Feeder ตระกูล YUMSHARE/D-series (อาหาร + ซองดูดความชื้น),
 น้ำพุ EVERSWEET (น้ำ + filter + battery)
 
-> ⚠️ **GitHub Actions cron lag**: `cron: '*/15 * * * *'` ตามสเปกจะรันทุก 15 นาที
-> แต่ในทางปฏิบัติ GitHub Actions มี delay 5–30 นาที (ช่วง peak อาจถึง 60+ นาที)
-> ฉะนั้นรอบจริงอาจห่าง 20–45 นาที ถ้ารับไม่ได้ ให้ย้ายไป self-hosted (Raspberry Pi)
-> หรือ Cloudflare Workers Cron ทีหลัง — logic ใน `notifier.py` ย้าย platform ง่าย
+> ℹ️ **รันบน Cloud Run + Cloud Scheduler**: เดิมโปรเจกต์รันบน GitHub Actions cron
+> แต่ GHA มี delay 5–30 นาที (peak 60+) ทำให้รอบจริงห่าง 20–45 นาที จึงย้ายมา Cloud Run
+> ที่ Cloud Scheduler ยิง `/poll` ตรงเวลาทุก 15 นาที — logic ใน `notifier.py` แยกจาก platform
+> ยังรันที่ไหนก็ได้ (local, Raspberry Pi, Cloudflare Workers) ถ้าอยากย้ายอีกทีหลัง
 
 ## ฟีเจอร์
 
@@ -20,7 +20,7 @@ PetKit แอพเตือนแค่ครั้งเดียวตอน�
 - ✅ ส่งข้อความ "กลับสู่ปกติแล้ว" ครั้งเดียวเมื่อปัญหาหาย
 - 🎯 หลาย alert type ต่ออุปกรณ์ — แต่ละ alert มี backoff/state แยกกัน
 - 🔐 ใช้ secondary PetKit account ไม่ขัดกับแอพมือถือบน account หลัก
-- 🆓 ฟรี 100% (GitHub Actions free tier)
+- 🆓 ฟรี 100% (GCP free tier — Cloud Run + Scheduler + GCS อยู่ในโควต้าฟรีที่ปริมาณนี้)
 
 ## Alert types ทั้งหมด
 
@@ -49,7 +49,7 @@ PetKit แอพเตือนแค่ครั้งเดียวตอน�
 | 5 | + 120 นาที |
 | 6+ | + 120 นาที (cap) |
 
-ตัวเลขนี้เป็นเวลา "ตามตาราง" จริงต้องบวก GHA cron lag
+ตัวเลขนี้เป็นเวลา "ตามตาราง" — Cloud Scheduler ยิงตรงเวลา รอบจริงห่างตามนี้
 
 ---
 
@@ -95,7 +95,7 @@ PetKit แอพเตือนแค่ครั้งเดียวตอน�
 
 ## วิธี Setup (ขั้นตอนหลัก)
 
-### A) ทดสอบใน local ก่อน (แนะนำ — ดีกว่ารอ GHA debug)
+### A) ทดสอบใน local ก่อน (แนะนำ — เร็วกว่า debug บน cloud)
 
 ```bash
 # 1. clone โปรเจกต์
@@ -136,38 +136,71 @@ INFO petpoke: Pura MAX still full; next alert at 15:30 14/05/2026
 > **Tip**: ครั้งแรกอยากเห็นว่า PetKit return field อะไรบ้าง → ตั้ง `DEBUG_LOG_RAW=true`
 > ใน `.env` แล้วรันใหม่ จะมี dump device state ใน log
 
-### B) Deploy ไป GitHub Actions
+### B) Deploy ไป Google Cloud Run
 
-1. สร้าง repo ใหม่บน GitHub (private แนะนำ)
-2. push code ขึ้น:
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: initial PetPoke setup"
-   git branch -M main
-   git remote add origin git@github.com:<you>/<repo>.git
-   git push -u origin main
-   ```
-3. ไปที่ repo → `Settings` → `Secrets and variables` → `Actions`
-4. ใต้แท็บ **Secrets** กด `New repository secret` แล้วใส่ทีละตัว:
+ต้องมี [gcloud CLI](https://cloud.google.com/sdk/docs/install) + บัญชี GCP ที่ผูก billing แล้ว
+(free tier ครอบคลุม ไม่เสียเงินที่ปริมาณนี้) สมมติชื่อ project = `petpoke-notifier`, region = `us-central1`
 
-   | Secret name | Value |
-   |---|---|
-   | `PETKIT_USERNAME` | email ของ secondary PetKit account |
-   | `PETKIT_PASSWORD` | password ของ secondary account |
-   | `TELEGRAM_BOT_TOKEN` | token จาก @BotFather |
-   | `TELEGRAM_CHAT_ID` | chat ID ของคุณ |
+```bash
+# 0. login + ตั้ง project (project id ต้อง unique ทั้งโลก เปลี่ยนได้)
+gcloud auth login
+gcloud projects create petpoke-notifier --name=petpoke
+gcloud billing projects link petpoke-notifier --billing-account=<YOUR_BILLING_ID>
+gcloud config set project petpoke-notifier
 
-5. (ทางเลือก) ใต้แท็บ **Variables** เพิ่มตัวพวกนี้ถ้าอยากปรับ:
+# 1. เปิด API ที่ใช้
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com cloudscheduler.googleapis.com \
+  secretmanager.googleapis.com storage.googleapis.com
 
-   | Variable | Default | ความหมาย |
-   |---|---|---|
-   | `PETKIT_REGION` | `TH` | country code ของ account |
-   | `PETKIT_TIMEZONE` | `Asia/Bangkok` | timezone สำหรับเวลาใน message |
-   | `DEBUG_LOG_RAW` | `false` | ตั้ง `true` ดูสถานะ raw รอบแรก |
+# 2. สร้าง bucket เก็บ state
+gcloud storage buckets create gs://petpoke-notifier-state \
+  --location=us-central1 --uniform-bucket-level-access
+# (ถ้าย้ายมาจาก runtime เดิม seed state ก่อน กัน alert เด้งซ้ำ)
+gcloud storage cp state.json gs://petpoke-notifier-state/state.json
 
-6. ไปที่แท็บ `Actions` → เลือก workflow `PetKit Poll` → กด `Run workflow` เพื่อทดสอบ manual ก่อน
-7. ดู log ว่า login + ส่ง Telegram ทำงานปกติ → จากนั้น cron จะวิ่งทุก 15 นาทีอัตโนมัติ
+# 3. สร้าง secret 4 ตัว (ใส่ค่าแบบไม่โผล่จอ/ไม่ลง history)
+for s in PETKIT_USERNAME PETKIT_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
+  gcloud secrets create "$s" --replication-policy=automatic
+  printf "Enter %s: " "$s"; read -rs val; echo
+  printf %s "$val" | gcloud secrets versions add "$s" --data-file=-
+done; unset val
+
+# 4. ให้สิทธิ์ default compute service account (= identity ที่ service + scheduler ใช้)
+PROJNUM=$(gcloud projects describe petpoke-notifier --format='value(projectNumber)')
+SA="$PROJNUM-compute@developer.gserviceaccount.com"
+for s in PETKIT_USERNAME PETKIT_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:$SA" --role=roles/secretmanager.secretAccessor
+done
+gcloud storage buckets add-iam-policy-binding gs://petpoke-notifier-state \
+  --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
+
+# 5. deploy (Cloud Build buildpacks — ไม่ต้องมี Dockerfile)
+gcloud run deploy petpoke --source . --region=us-central1 \
+  --no-allow-unauthenticated --memory=512Mi --timeout=120 --max-instances=1 \
+  --set-env-vars=STATE_BUCKET=petpoke-notifier-state,STATE_OBJECT=state.json,PETKIT_REGION=TH,PETKIT_TIMEZONE=Asia/Bangkok \
+  --set-secrets=PETKIT_USERNAME=PETKIT_USERNAME:latest,PETKIT_PASSWORD=PETKIT_PASSWORD:latest,TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,TELEGRAM_CHAT_ID=TELEGRAM_CHAT_ID:latest
+
+# 6. ให้ scheduler เรียก service ได้ + สร้าง cron job ทุก 15 นาที (OIDC auth)
+URL=$(gcloud run services describe petpoke --region=us-central1 --format='value(status.url)')
+gcloud run services add-iam-policy-binding petpoke --region=us-central1 \
+  --member="serviceAccount:$SA" --role=roles/run.invoker
+gcloud scheduler jobs create http petpoke-poll --location=us-central1 \
+  --schedule="*/15 * * * *" --time-zone="Asia/Bangkok" \
+  --uri="$URL/poll" --http-method=POST \
+  --oidc-service-account-email="$SA" --oidc-token-audience="$URL" \
+  --attempt-deadline=300s
+
+# 7. ทดสอบยิงเลย 1 รอบ แล้วดู log
+gcloud scheduler jobs run petpoke-poll --location=us-central1
+gcloud logging read 'resource.type=cloud_run_revision AND resource.labels.service_name=petpoke' \
+  --limit=20 --freshness=10m --format='value(timestamp,textPayload)'
+```
+
+> **Note**: service เป็น **private** (`--no-allow-unauthenticated`) — เปิดให้เฉพาะ Cloud Scheduler
+> เรียกผ่าน OIDC เท่านั้น อย่าทำเป็น public เพราะ `/poll` จะ trigger PetKit login + ส่ง Telegram
+> ใครก็ยิงได้ = abuse ได้ ค่า secret อยู่ใน Secret Manager (`--set-secrets`) ไม่ฝังในโค้ด
 
 ---
 
@@ -180,18 +213,21 @@ INFO petpoke: Pura MAX still full; next alert at 15:30 14/05/2026
 | `Telegram returned 403` | ยังไม่ได้กด Start ทักทาย bot | เปิดแชท bot แล้วส่ง `/start` |
 | `Telegram returned 400 chat not found` | `TELEGRAM_CHAT_ID` ผิด | เช็คอีกครั้งจาก `getUpdates` |
 | ไม่มี alert ทั้งๆ ที่กล่องเต็ม | field `boxFull` ใน pypetkitapi เปลี่ยน | ตั้ง `DEBUG_LOG_RAW=true` ดู log แล้วแจ้ง issue |
-| Workflow ขึ้นแต่ไม่ commit state | repo permissions ไม่พอ | ตรวจ `permissions: contents: write` ใน `poll.yml` |
-| commit state รก git history | ปกติ ทุก 15 นาทีถ้ามี change | ไม่ใช่ปัญหา — `[skip ci]` ป้องกัน loop แล้ว |
+| `/poll` คืน 403 | Scheduler ไม่มีสิทธิ์เรียก service | ตรวจ `run.invoker` ของ compute SA บน service |
+| state ไม่ถูกเขียนใน GCS | SA ไม่มีสิทธิ์ bucket | ตรวจ `storage.objectAdmin` บน `gs://petpoke-notifier-state` |
+| log ขึ้น `State unchanged; skipping write` | ปกติ — ไม่มี change รอบนั้น | ไม่ใช่ปัญหา (กัน write ฟุ่มเฟือยให้อยู่ใน free tier) |
 
 ## โครงสร้างโปรเจกต์
 
 ```
 PetPoke/
-├── .github/workflows/poll.yml   # cron job (ทุก 15 นาที)
-├── notifier.py                  # ตัว script หลัก
-├── requirements.txt             # pypetkitapi + aiohttp
-├── state.json                   # state (auto-commit โดย GHA)
-├── .env.example                 # template สำหรับ local
+├── notifier.py        # ตัว script หลัก (poll logic — แยกจาก platform)
+├── main.py            # Flask entrypoint สำหรับ Cloud Run (/ health, /poll)
+├── Procfile           # gunicorn process สำหรับ Cloud Run buildpacks
+├── requirements.txt   # pypetkitapi + aiohttp + flask + gunicorn + google-cloud-storage
+├── state.json         # state เดิม (historical/seed — ของจริงอยู่ใน GCS)
+├── .gcloudignore      # ตัดไฟล์ออกตอน deploy --source
+├── .env.example       # template สำหรับ local
 ├── .gitignore
 └── README.md
 ```
@@ -204,8 +240,9 @@ PetPoke/
 - รองรับ device class ที่ pypetkitapi คืนมาเป็น `Litter`, `Feeder`,
   `WaterFountain` (จาก class name โดยตรง). ถ้ามี Purifier/Spray ตัวอื่นๆ
   ต้องเพิ่ม extractor function ใน `notifier.py`
-- State file commit กลับ repo ผ่าน GHA — ถ้า private repo ปัญหาน้อย แต่ถ้าทำ
-  public ระวังไม่มีอะไร sensitive (มีแค่ timestamp + counter)
+- State เก็บใน GCS bucket (`gs://petpoke-notifier-state/state.json`) ไม่ commit กลับ repo
+  อีกแล้ว — `state.json` ใน git เป็นแค่ของเก่า/seed สำหรับ local run (มีแค่ timestamp +
+  counter ไม่ sensitive) ตอนรัน local โดยไม่ตั้ง `STATE_BUCKET` จะใช้ไฟล์ local ตามปกติ
 
 ## License
 
