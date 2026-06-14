@@ -726,6 +726,23 @@ def format_cleared_message(
     return "\n".join(lines)
 
 
+def devices_with_specific_alert(alerts: list[Alert]) -> set[str]:
+    """
+    Device ids that have a concrete (non-`device_error`) alert active.
+
+    `device_error` is a catch-all that PetKit often raises *alongside* a more
+    specific condition — a full Pura MAX box, an empty feeder — so firing both
+    sends the user two messages and two backoff streams for one physical
+    problem. When a device is in this set, its `device_error` is redundant and
+    gets muted in `process_alerts`.
+    """
+    return {
+        alert.device_id
+        for alert in alerts
+        if alert.is_active and alert.code != "device_error"
+    }
+
+
 async def process_alerts(
     config: Config,
     store: StateStore,
@@ -739,11 +756,29 @@ async def process_alerts(
 
     now_ms = int(now_utc.timestamp() * 1000)
     now_local = now_utc.astimezone(tz)
+    muted_error_devices = devices_with_specific_alert(alerts)
 
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=20)
     ) as session:
         for alert in alerts:
+            if (
+                alert.code == "device_error"
+                and alert.device_id in muted_error_devices
+            ):
+                # A specific alert already covers this device. Drop the
+                # redundant error and silently clear any lingering state so no
+                # false "error cleared" message goes out.
+                if store.get(alert.key).is_active:
+                    LOG.info(
+                        "Muting redundant device_error for %s "
+                        "(covered by a specific alert)",
+                        alert.device_name,
+                    )
+                store.reset(alert.key)
+                store.get(alert.key).device_name = alert.device_name
+                continue
+
             state = store.get(alert.key)
             state.device_name = alert.device_name
 
