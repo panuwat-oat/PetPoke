@@ -54,6 +54,10 @@ One poll = login via `pypetkitapi` → `extract_alerts` per device → `process_
 - Inactive while `state.is_active` → send cleared message, `store.reset(key)`.
 - **State only advances if the Telegram send succeeds.** `_handle_active` builds a *tentative* `AlertState`, sends, and commits the tentative values only on success (`if not sent: return`). Don't refactor this into advance-then-send — a failed send must be retried next poll, not skipped.
 
+**"แก้แล้ว" acknowledge button.** Every active alert ships an inline keyboard (`_ack_keyboard`, callback_data `ack:<key>`). Each poll, `process_telegram_updates` drains `getUpdates` (short poll, no webhook → service stays private) and sets `AlertState.acknowledged=True` for tapped keys. While `acknowledged` and still active, `_handle_active` returns early (no send, no backoff advance) — this counters PetKit's stale cloud cache that keeps reporting a problem after the user fixed it. `_handle_cleared` resets silently when `acknowledged` (no redundant "cleared ✅"), which also re-arms the key. The consumed Telegram `update_id` is persisted as `StateStore.telegram_offset` so a tap is processed once. `answerCallbackQuery` is best-effort (often stale by the next ≤15-min poll — no toast, but the tap still registers). Taps from a chat other than `TELEGRAM_CHAT_ID` are ignored. No new env var — reuses the bot token.
+
+**State schema is now an envelope:** `{"alerts": {key: state}, "telegram_offset": N}`. `StateStore.from_dict` still reads the legacy flat `{key: state}` map (detected by the absence of an `"alerts"` sub-dict) and the first write upgrades it. Keep this back-compat — old `state.json` (git + the live GCS object) predate the envelope.
+
 **`device_error` deduplication.** `device_error` is a catch-all that PetKit raises *alongside* a specific condition (e.g. a full Pura MAX box also reports an error code) — firing both means two messages and two backoff streams for one problem. `process_alerts` mutes `device_error` for any device that has a concrete (non-error) alert active in the same poll (`devices_with_specific_alert`); the mute path silently `store.reset`s the key so no false "error cleared" message goes out. Standalone `device_error` (no specific alert) still fires normally. Evidence for this came from mining the git history of `state.json` (co-active keys with identical timestamps), not from reading Telegram — the Bot API can't read history.
 
 **Device dispatch** is by `type(device).__name__`: `Litter`, `Feeder`, `WaterFountain`. Each has an `_extract_*_alerts` function. `_extract_common_problem_alerts` adds `device_error` / `device_offline` to all three, plus `pet_error` for `Litter` only.
@@ -62,7 +66,7 @@ One poll = login via `pypetkitapi` → `extract_alerts` per device → `process_
 
 **State migration** (`StateStore.from_dict` / `AlertState.from_dict`): legacy bare-`device_id` keys → `<id>:box_full`; legacy `was_full` → `is_active`. Keep these when changing the schema — old `state.json` files exist in git history.
 
-`device_class` on each Alert drives the product photo (`DEVICE_PHOTOS`); `send_telegram` falls back from `sendPhoto` to `sendMessage` if Telegram rejects the photo URL. `RULE_LABELS[code]` maps each code to `(emoji, active_label, cleared_label)`. `IGNORED_ERROR_CODES` (e.g. `blk_d`) suppresses non-urgent hardware errors.
+`device_class` on each Alert drives the product photo (`DEVICE_PHOTOS`); `send_telegram` falls back from `sendPhoto` to `sendMessage` if Telegram rejects the photo URL. **Photos are currently disabled** (`DEVICE_PHOTOS = {}`) — alerts send as text-only because the images looked cluttered; re-add device-class→URL entries to turn them back on. `RULE_LABELS[code]` maps each code to `(emoji, active_label, cleared_label)`. `IGNORED_ERROR_CODES` (e.g. `blk_d`) suppresses non-urgent hardware errors.
 
 ### Extending
 

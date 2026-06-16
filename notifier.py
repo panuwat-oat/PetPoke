@@ -109,6 +109,11 @@ class AlertState:
     first_alert_ts: int | None = None
     last_alert_ts: int | None = None
     next_alert_at: int | None = None
+    # Set when the user taps "แก้แล้ว" on the Telegram alert. While True and the
+    # condition is still active in the cloud, repeats are suppressed — PetKit's
+    # cached state often lags reality until the app forces a device refresh.
+    # Cleared automatically when the condition finally reads inactive.
+    acknowledged: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +123,7 @@ class AlertState:
             "first_alert_ts": self.first_alert_ts,
             "last_alert_ts": self.last_alert_ts,
             "next_alert_at": self.next_alert_at,
+            "acknowledged": self.acknowledged,
         }
 
     @classmethod
@@ -133,6 +139,7 @@ class AlertState:
             first_alert_ts=_maybe_int(data.get("first_alert_ts")),
             last_alert_ts=_maybe_int(data.get("last_alert_ts")),
             next_alert_at=_maybe_int(data.get("next_alert_at")),
+            acknowledged=bool(data.get("acknowledged", False)),
         )
 
 
@@ -156,6 +163,9 @@ class Alert:
 @dataclass
 class StateStore:
     alerts: dict[str, AlertState] = field(default_factory=dict)
+    # Highest Telegram update_id already consumed by getUpdates. Persisted so a
+    # button tap is processed exactly once across the 15-min poll cadence.
+    telegram_offset: int = 0
 
     def get(self, key: str) -> AlertState:
         return self.alerts.setdefault(key, AlertState())
@@ -164,19 +174,31 @@ class StateStore:
         self.alerts[key] = AlertState()
 
     def to_dict(self) -> dict[str, Any]:
-        return {key: state.to_dict() for key, state in self.alerts.items()}
+        return {
+            "alerts": {key: state.to_dict() for key, state in self.alerts.items()},
+            "telegram_offset": self.telegram_offset,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StateStore":
+        data = data or {}
+        # New schema wraps the alert map under "alerts"; the legacy schema is a
+        # flat {key: state} map (no "alerts" envelope). Detect and unwrap.
+        if isinstance(data.get("alerts"), dict):
+            raw_alerts = data["alerts"]
+            offset = _maybe_int(data.get("telegram_offset")) or 0
+        else:
+            raw_alerts = data
+            offset = 0
         alerts: dict[str, AlertState] = {}
-        for raw_key, payload in (data or {}).items():
+        for raw_key, payload in raw_alerts.items():
             key = str(raw_key)
             # Migrate legacy keys that were just <device_id> (the original
             # single-purpose litter box schema).
             if ":" not in key:
                 key = f"{key}:box_full"
             alerts[key] = AlertState.from_dict(payload or {})
-        return cls(alerts=alerts)
+        return cls(alerts=alerts, telegram_offset=offset)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -650,13 +672,15 @@ async def send_telegram(
     config: Config,
     text: str,
     photo_url: str | None = None,
+    reply_markup: dict[str, Any] | None = None,
 ) -> bool:
     """
     Send a Telegram message, optionally with a photo.
 
     When `photo_url` is provided, uses sendPhoto with the text as caption.
     If Telegram rejects the photo (e.g. URL unreachable), falls back to a
-    plain text message automatically.
+    plain text message automatically. `reply_markup` attaches an inline
+    keyboard (e.g. the "แก้แล้ว" acknowledge button).
     """
     if photo_url:
         api_url = (
@@ -678,6 +702,8 @@ async def send_telegram(
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
 
     try:
         async with session.post(api_url, json=payload) as resp:
@@ -687,13 +713,105 @@ async def send_telegram(
             LOG.error("Telegram returned %s: %s", resp.status, body[:300])
             if photo_url:
                 LOG.info("Retrying as text-only message")
-                return await send_telegram(session, config, text, photo_url=None)
+                return await send_telegram(
+                    session, config, text, photo_url=None, reply_markup=reply_markup
+                )
             return False
     except aiohttp.ClientError as exc:
         LOG.error("Telegram request failed: %s", exc)
         if photo_url:
-            return await send_telegram(session, config, text, photo_url=None)
+            return await send_telegram(
+                session, config, text, photo_url=None, reply_markup=reply_markup
+            )
         return False
+
+
+def _ack_keyboard(alert_key: str) -> dict[str, Any] | None:
+    """Inline keyboard with a single "แก้แล้ว" button for an active alert.
+
+    callback_data is capped at 64 bytes by Telegram; if the key is too long we
+    return None and the alert simply goes out without a button.
+    """
+    callback_data = f"ack:{alert_key}"
+    if len(callback_data.encode("utf-8")) > 64:
+        LOG.warning("Alert key too long for callback_data; omitting ack button: %s", alert_key)
+        return None
+    return {
+        "inline_keyboard": [[{"text": "✅ แก้แล้ว (เงียบไว้)", "callback_data": callback_data}]]
+    }
+
+
+async def process_telegram_updates(config: Config, store: StateStore) -> None:
+    """Drain Telegram callback queries and mark acknowledged alerts.
+
+    Runs once per poll using getUpdates (no public webhook needed, so the Cloud
+    Run service stays private). A tapped "แก้แล้ว" button sets `acknowledged`
+    on that alert; repeats are then suppressed until the cloud reports it clear.
+    Best-effort: never raises, so a Telegram hiccup can't break the poll.
+    """
+    api = f"https://api.telegram.org/bot{config.telegram_bot_token}"
+    params = {
+        "offset": store.telegram_offset + 1,
+        "timeout": 0,
+        "allowed_updates": json.dumps(["callback_query"]),
+    }
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=20)
+        ) as session:
+            async with session.get(f"{api}/getUpdates", params=params) as resp:
+                if resp.status != 200:
+                    LOG.warning("getUpdates returned %s: %s", resp.status, (await resp.text())[:200])
+                    return
+                data = await resp.json()
+            updates = data.get("result") or []
+            for update in updates:
+                update_id = _maybe_int(update.get("update_id"))
+                if update_id is not None and update_id > store.telegram_offset:
+                    store.telegram_offset = update_id
+                await _handle_callback_query(session, config, store, update.get("callback_query"))
+    except (aiohttp.ClientError, json.JSONDecodeError) as exc:
+        LOG.warning("Telegram getUpdates failed: %s", exc)
+
+
+async def _handle_callback_query(
+    session: aiohttp.ClientSession,
+    config: Config,
+    store: StateStore,
+    cb: dict[str, Any] | None,
+) -> None:
+    if not cb:
+        return
+    data = str(cb.get("data") or "")
+    if not data.startswith("ack:"):
+        return
+
+    # Only honour taps from the configured chat — ignore anything else.
+    chat_id = str(((cb.get("message") or {}).get("chat") or {}).get("id") or "")
+    if chat_id and str(config.telegram_chat_id) != chat_id:
+        LOG.info("Ignoring ack from unexpected chat %s", chat_id)
+        return
+
+    key = data[len("ack:"):]
+    state = store.alerts.get(key)
+    toast = "รับทราบ ✅ เงียบแจ้งเตือนแล้ว"
+    if state is None or not state.is_active:
+        toast = "ไม่มีแจ้งเตือนที่ต้องปิดแล้ว"
+    else:
+        state.acknowledged = True
+        LOG.info("User acknowledged %s; suppressing repeats until cleared", key)
+
+    cb_id = cb.get("id")
+    if cb_id:
+        try:
+            async with session.post(
+                f"https://api.telegram.org/bot{config.telegram_bot_token}/answerCallbackQuery",
+                json={"callback_query_id": cb_id, "text": toast},
+            ) as resp:
+                if resp.status != 200:
+                    LOG.info("answerCallbackQuery %s: %s", resp.status, (await resp.text())[:200])
+        except aiohttp.ClientError as exc:
+            LOG.info("answerCallbackQuery failed (likely stale): %s", exc)
 
 
 def _html_escape(text: str) -> str:
@@ -849,6 +967,16 @@ async def _handle_active(
     now_ms: int,
     now_local: datetime,
 ) -> None:
+    # User tapped "แก้แล้ว": stay quiet while the condition lingers in the
+    # cloud's stale cache. The cleared-path re-arms this once it reads inactive.
+    if state.acknowledged:
+        LOG.info(
+            "%s [%s] acknowledged by user; suppressing repeat",
+            alert.device_name,
+            alert.code,
+        )
+        return
+
     is_first_alert = not state.is_active or state.alert_count == 0
     due = is_first_alert or (
         state.next_alert_at is not None and now_ms >= state.next_alert_at
@@ -874,7 +1002,10 @@ async def _handle_active(
     message = format_active_message(alert, tentative, now_local)
     photo_url = photo_for_alert(alert)
 
-    sent = await send_telegram(session, config, message, photo_url=photo_url)
+    sent = await send_telegram(
+        session, config, message, photo_url=photo_url,
+        reply_markup=_ack_keyboard(alert.key),
+    )
     if not sent:
         LOG.warning(
             "Telegram send failed for %s [%s]; state not advanced",
@@ -908,6 +1039,17 @@ async def _handle_cleared(
     now_local: datetime,
 ) -> None:
     if not state.is_active:
+        return
+
+    # Already acknowledged by the user — they know it's fixed, so the eventual
+    # cloud-confirmed clear goes out silently. Just re-arm for next time.
+    if state.acknowledged:
+        LOG.info(
+            "Cleared %s [%s] (was acknowledged); resetting silently",
+            alert.device_name,
+            alert.code,
+        )
+        store.reset(alert.key)
         return
 
     message = format_cleared_message(alert, state, now_local)
@@ -965,6 +1107,10 @@ async def main_async() -> int:
 
     store = load_state(config.state_file)
     state_before = json.dumps(store.to_dict(), sort_keys=True, ensure_ascii=False)
+
+    # Drain any "แก้แล้ว" button taps before evaluating alerts so an ack takes
+    # effect in the same poll it's read.
+    await process_telegram_updates(config, store)
 
     try:
         alerts = await fetch_alerts(config)
