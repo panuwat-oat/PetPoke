@@ -50,11 +50,9 @@ RULE_LABELS: dict[str, tuple[str, str, str]] = {
 # clearly points to which physical device the alert refers to.
 # To disable photos, set DEVICE_PHOTOS = {} or remove specific entries.
 # To override, replace any URL with your own (must be a direct image URL).
-DEVICE_PHOTOS: dict[str, str] = {
-    "Litter": "https://petkit.com/cdn/shop/files/puramax-2-automatic-cat-litter-box-app-control-2-year-warranty.png",
-    "Feeder": "https://petkit.com/cdn/shop/files/yumshare-solo-2-automatic-cat-feeder-app-control-2-year-warranty.png",
-    "WaterFountain": "https://petkit.com/cdn/shop/files/eversweet-max-cordless-pet-water-fountain-app-control.png",
-}
+# Photos disabled — text-only alerts are cleaner. Re-add entries here
+# (keyed by device class) to turn product images back on.
+DEVICE_PHOTOS: dict[str, str] = {}
 
 
 def photo_for_alert(alert: "Alert") -> str | None:
