@@ -2,7 +2,7 @@
 
 PetKit แอพเตือนแค่ครั้งเดียวตอนถังเต็ม / อาหารหมด / น้ำใกล้หมด ฯลฯ —
 ออกจากบ้านทีกลับมาเจอน้องล้นกล่องหรือชามเปล่า 😩
-โปรเจกต์นี้รัน script เล็กๆ ทุก 15 นาทีบน VPS (Docker container, loop ในตัว)
+โปรเจกต์นี้รัน script เล็กๆ ทุก 5 นาทีบน VPS (Docker container, loop ในตัว)
 เพื่อเช็คสถานะอุปกรณ์ทุกตัว แล้วยิง Telegram เตือนซ้ำตามตาราง backoff จนกว่าปัญหาจะหาย
 
 **รองรับ:** Pura MAX (ถังขยะ), Feeder ตระกูล YUMSHARE/D-series (อาหาร + ซองดูดความชื้น),
@@ -10,7 +10,7 @@ PetKit แอพเตือนแค่ครั้งเดียวตอน�
 
 > ℹ️ **รันบน VPS (Docker)**: เดิมรันบน GitHub Actions cron (drift 20–45 นาที) → ย้ายไป
 > Cloud Run + Cloud Scheduler → ตอนนี้ย้ายมา VPS ส่วนตัวด้วย Docker (`runner.py` loop poll
-> ทุก 15 นาทีในตัว container เดียว ไม่ต้องพึ่ง scheduler ภายนอก) — logic ใน `notifier.py`
+> ทุก 5 นาทีในตัว container เดียว ไม่ต้องพึ่ง scheduler ภายนอก) — logic ใน `notifier.py`
 > ยังแยกจาก platform รันที่ไหนก็ได้ (local, Raspberry Pi ฯลฯ) ถ้าอยากย้ายอีกทีหลัง
 
 ## ฟีเจอร์
@@ -50,7 +50,7 @@ PetKit แอพเตือนแค่ครั้งเดียวตอน�
 | 5 | + 120 นาที |
 | 6+ | + 120 นาที (cap) |
 
-ตัวเลขนี้เป็นเวลา "ตามตาราง" — `runner.py` หัก elapsed ออกจาก sleep รอบจริงห่าง ~15 นาที (ไม่ align นาฬิกาแบบ cron)
+ตัวเลขนี้เป็นเวลา backoff "ตามตาราง" ต่อ alert — แยกจากรอบ poll (ตั้งไว้ทุก 5 นาทีบน VPS) ที่เป็นแค่ความถี่ในการเช็คสถานะ
 
 ## ปุ่ม "แก้แล้ว" (ปิดแจ้งเตือนซ้ำ)
 
@@ -151,7 +151,7 @@ INFO petpoke: Pura MAX still full; next alert at 15:30 14/05/2026
 ### B) Deploy ขึ้น VPS ด้วย Docker
 
 ต้องมี VPS ที่ลง Docker + Docker Compose แล้ว logic ใน `notifier.py` แยกจาก platform —
-`runner.py` เป็น loop เรียก poll ทุก 15 นาทีในตัว (แทน Cloud Scheduler) container เดียวจบ
+`runner.py` เป็น loop เรียก poll ทุก 5 นาทีในตัว (แทน Cloud Scheduler) container เดียวจบ
 state เก็บเป็นไฟล์ใน mounted volume (`./data/state.json`) ไม่มี HTTP endpoint เปิดออก
 
 ```bash
@@ -178,7 +178,7 @@ ssh <vps> 'cd /opt/petpoke && docker compose up -d --build'
 ssh <vps> 'docker logs -f petpoke'
 ```
 
-> **Note**: ปรับรอบ poll ได้ด้วย `POLL_INTERVAL_MINUTES` ใน `docker-compose.yml` (default 15)
+> **Note**: ปรับรอบ poll ได้ด้วย `POLL_INTERVAL_MINUTES` ใน `docker-compose.yml` (ตั้งไว้ 5 นาทีบน VPS, default ใน `runner.py` = 15)
 > ค่า non-secret (region, timezone, interval, STATE_FILE) อยู่ใน `docker-compose.yml` —
 > secret 4 ตัวอยู่ใน `.env` (mode 600) แยกออกมา ไม่มี endpoint เปิดออก (เป็น loop ปิดในตัว)
 > ไม่เหมือน Cloud Run จึงไม่ต้องกังวลเรื่อง public abuse
@@ -203,7 +203,7 @@ ssh <vps> 'docker logs -f petpoke'
 ```
 PetPoke/
 ├── notifier.py        # ตัว script หลัก (poll logic — แยกจาก platform)
-├── runner.py          # loop driver สำหรับ VPS/Docker (poll ทุก 15 นาทีในตัว)
+├── runner.py          # loop driver สำหรับ VPS/Docker (poll ทุก 5 นาทีในตัว)
 ├── Dockerfile         # image: python:3.11-slim + requirements + runner.py
 ├── docker-compose.yml # service petpoke (env_file .env, volume ./data, restart)
 ├── .dockerignore      # ตัดไฟล์ออกตอน build (รวม CLAUDE.md/.claude)

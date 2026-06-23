@@ -5,8 +5,9 @@ services:
     container_name: petpoke
     env_file: .env
     environment:
-      # Poll cadence (matches the old Cloud Scheduler */15 schedule).
-      POLL_INTERVAL_MINUTES: "15"
+      # Poll cadence. Tightened to 5 min on the personal VPS (no free-tier
+      # quota to respect, unlike the old Cloud Run */15 schedule).
+      POLL_INTERVAL_MINUTES: "5"
       # Local-file state backend lives in the mounted volume below.
       STATE_FILE: /data/state.json
       PETKIT_REGION: TH
