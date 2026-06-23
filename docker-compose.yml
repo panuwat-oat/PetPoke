@@ -12,6 +12,8 @@ services:
       STATE_FILE: /data/state.json
       PETKIT_REGION: TH
       PETKIT_TIMEZONE: Asia/Bangkok
+      # Log timestamps in Bangkok local time (needs system tzdata, see Dockerfile).
+      TZ: Asia/Bangkok
     volumes:
       - ./data:/data
     restart: unless-stopped

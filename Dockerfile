@@ -6,6 +6,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# System tzdata so libc localtime (and thus Python log timestamps) honors the
+# TZ env var. The slim base ships without zoneinfo; the tzdata pip package only
+# covers Python's zoneinfo module, not libc.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
