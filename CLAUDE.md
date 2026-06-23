@@ -79,6 +79,8 @@ One poll = login via `pypetkitapi` → `extract_alerts` per device → `process_
 
 No HTTP endpoint is exposed (unlike Cloud Run's `/poll`) — the loop is self-contained, so there's no public-abuse surface. The Telegram "แก้แล้ว" button still works via `getUpdates` short-poll (no webhook needed). The VPS also runs an unrelated `byd-bot` container; `--max-instances`-style racing isn't a concern (single container, single state file).
 
+**Logging.** App logs go to stdout (`PYTHONUNBUFFERED=1`, format `ts LEVEL logger: msg`); `runner.py` catches per-poll exceptions and logs `LOG.exception` so a bad cycle never kills the loop. Compose caps the `json-file` driver at `max-size 10m` × `max-file 5` (50MB) — the driver is unbounded by default and 5-min polling would otherwise grow it forever. Timestamps are Bangkok local: the image installs **system `tzdata`** (slim ships none; the `tzdata` pip package only covers Python's `zoneinfo`, not libc) and compose sets `TZ=Asia/Bangkok`. The VPS host timezone is also `Asia/Bangkok` (`timedatectl set-timezone`).
+
 **Deploy = copy runtime files + `docker compose up -d --build`** (see Commands). Don't copy `CLAUDE.md`/`.claude` to the server (global rule); the `tar` file-list and `.dockerignore` both exclude them. macOS `tar` emits AppleDouble `._*` files — strip them on the server after extract (`rm -f /opt/petpoke/._*`).
 
 GCP teardown is **complete**: Cloud Run service `petpoke`, Cloud Scheduler job `petpoke-poll`, GCS bucket `petpoke-notifier-state`, Cloud Build source bucket, Artifact Registry repo `cloud-run-source-deploy`, and the 4 Secret Manager secrets are all deleted. Only the (now-empty) project `petpoke-notifier` and its billing budget `petpoke-charge-alert` remain.
