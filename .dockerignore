@@ -1,0 +1,16 @@
+# Build-context exclusions for `docker compose build`.
+.git/
+.github/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/
+state.json
+.DS_Store
+# Claude artifacts and docs never belong in the image.
+.claude/
+CLAUDE.md
+README.md

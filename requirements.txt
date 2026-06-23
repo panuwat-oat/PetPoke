@@ -1,8 +1,3 @@
 pypetkitapi>=1.15.0,<2.0.0
 aiohttp>=3.9.0,<4.0.0
 tzdata>=2024.1
-
-# Cloud Run HTTP service + GCS state backend (harmless on the GHA cron path).
-flask>=3.0,<4.0
-gunicorn>=21,<24
-google-cloud-storage>=2.14,<4.0

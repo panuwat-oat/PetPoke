@@ -1,0 +1,16 @@
+services:
+  petpoke:
+    build: .
+    image: petpoke:latest
+    container_name: petpoke
+    env_file: .env
+    environment:
+      # Poll cadence (matches the old Cloud Scheduler */15 schedule).
+      POLL_INTERVAL_MINUTES: "15"
+      # Local-file state backend lives in the mounted volume below.
+      STATE_FILE: /data/state.json
+      PETKIT_REGION: TH
+      PETKIT_TIMEZONE: Asia/Bangkok
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

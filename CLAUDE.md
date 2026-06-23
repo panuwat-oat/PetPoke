@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PetPoke polls the PetKit cloud and sends **repeating** Telegram alerts on a backoff schedule until a device problem is resolved (PetKit's own app only notifies once). Core poll logic lives in one file, `notifier.py`, by design — so the runtime platform is easy to swap.
 
-**Runtime: Google Cloud Run + Cloud Scheduler** (project `petpoke-notifier`, region `us-central1`). Cloud Scheduler hits the service's `/poll` endpoint every 15 min on a precise schedule. The old GitHub Actions cron (`poll.yml`) is **disabled** — it drifted 20–45 min due to GHA cron lag, which was the reason for migrating. The workflow file is removed; `notifier.py` stays platform-agnostic so it can still run anywhere (local, Pi, etc.).
+**Runtime: personal VPS via Docker** (Contabo, host `personal-vps`/`contabo` in `~/.ssh/config` → `147.93.156.210`, root; project lives in `/opt/petpoke`). A single long-lived container runs `runner.py`, which calls `notifier.main_async()` on an internal 15-min loop (`POLL_INTERVAL_MINUTES`, default 15) — no external scheduler. `docker-compose.yml` sets `restart: unless-stopped` (survives reboot) and mounts `./data` for state. Lineage: GitHub Actions cron (drift 20–45 min) → Google Cloud Run + Cloud Scheduler → **now VPS Docker** (Cloud Run + Scheduler + GCS bucket + secrets + Artifact Registry repo all torn down). `notifier.py` stays platform-agnostic so it can still run anywhere (local, Pi, etc.).
 
 The README is in Thai and is the authoritative setup/operations guide. User-facing Telegram strings are intentionally Thai.
 
@@ -25,22 +25,22 @@ DEBUG_LOG_RAW=true python notifier.py
 No test suite, linter, or build step exists. Python 3.11 (uses `zoneinfo`, `from __future__ import annotations`).
 
 ```bash
-# Cloud Run — redeploy after code changes (Cloud Build buildpacks, no Dockerfile)
-gcloud run deploy petpoke --source . --project=petpoke-notifier --region=us-central1 \
-  --no-allow-unauthenticated --memory=512Mi --timeout=120 --max-instances=1
+# VPS — redeploy after code changes (copy runtime files, then rebuild)
+tar czf - Dockerfile docker-compose.yml requirements.txt notifier.py runner.py .dockerignore \
+  | ssh personal-vps 'tar xzf - -C /opt/petpoke && rm -f /opt/petpoke/._*'
+ssh personal-vps 'cd /opt/petpoke && docker compose up -d --build'
 
 # Tail logs
-gcloud logging read 'resource.type=cloud_run_revision AND resource.labels.service_name=petpoke' \
-  --project=petpoke-notifier --limit=30 --freshness=15m --format="value(timestamp,textPayload)"
+ssh personal-vps 'docker logs -f petpoke'
 
-# Manually fire a poll (uses the scheduler's OIDC identity)
-gcloud scheduler jobs run petpoke-poll --project=petpoke-notifier --location=us-central1
+# Manually fire one poll (one-shot inside the container, separate from the loop)
+ssh personal-vps 'docker exec petpoke python -c "import asyncio,notifier; raise SystemExit(asyncio.run(notifier.main_async()))"'
 
-# Rotate a secret value
-printf %s "NEW_VALUE" | gcloud secrets versions add TELEGRAM_BOT_TOKEN --project=petpoke-notifier --data-file=-
+# Rotate a secret value: edit /opt/petpoke/.env then restart
+ssh personal-vps 'cd /opt/petpoke && docker compose restart'
 ```
 
-Required env: `PETKIT_USERNAME`, `PETKIT_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Optional: `PETKIT_REGION` (default `TH`), `PETKIT_TIMEZONE` (default `Asia/Bangkok`), `STATE_FILE` (default `state.json`), `DEBUG_LOG_RAW`. Cloud-Run-only: `STATE_BUCKET` (enables the GCS state backend), `STATE_OBJECT` (default `state.json`). On Cloud Run the four required vars come from Secret Manager (`--set-secrets`); the rest are plain env vars.
+Required env: `PETKIT_USERNAME`, `PETKIT_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Optional: `PETKIT_REGION` (default `TH`), `PETKIT_TIMEZONE` (default `Asia/Bangkok`), `STATE_FILE` (default `state.json`; set to `/data/state.json` in the container), `POLL_INTERVAL_MINUTES` (default 15, used by `runner.py` only), `DEBUG_LOG_RAW`. On the VPS the four required secrets live in `/opt/petpoke/.env` (mode 600, `env_file` in compose); the non-secret vars are set in `docker-compose.yml`. The `STATE_BUCKET`/`STATE_OBJECT` GCS backend still exists in `notifier.py` (lazy import) but is unused now — leave it for portability.
 
 ## Architecture
 
@@ -56,7 +56,7 @@ One poll = login via `pypetkitapi` → `extract_alerts` per device → `process_
 
 **"แก้แล้ว" acknowledge button.** Every active alert ships an inline keyboard (`_ack_keyboard`, callback_data `ack:<key>`). Each poll, `process_telegram_updates` drains `getUpdates` (short poll, no webhook → service stays private) and sets `AlertState.acknowledged=True` for tapped keys. While `acknowledged` and still active, `_handle_active` returns early (no send, no backoff advance) — this counters PetKit's stale cloud cache that keeps reporting a problem after the user fixed it. `_handle_cleared` resets silently when `acknowledged` (no redundant "cleared ✅"), which also re-arms the key. The consumed Telegram `update_id` is persisted as `StateStore.telegram_offset` so a tap is processed once. `answerCallbackQuery` is best-effort (often stale by the next ≤15-min poll — no toast, but the tap still registers). Taps from a chat other than `TELEGRAM_CHAT_ID` are ignored. No new env var — reuses the bot token.
 
-**State schema is now an envelope:** `{"alerts": {key: state}, "telegram_offset": N}`. `StateStore.from_dict` still reads the legacy flat `{key: state}` map (detected by the absence of an `"alerts"` sub-dict) and the first write upgrades it. Keep this back-compat — old `state.json` (git + the live GCS object) predate the envelope.
+**State schema is now an envelope:** `{"alerts": {key: state}, "telegram_offset": N}`. `StateStore.from_dict` still reads the legacy flat `{key: state}` map (detected by the absence of an `"alerts"` sub-dict) and the first write upgrades it. Keep this back-compat — old `state.json` (git + the live VPS state file, originally seeded from GCS) predate the envelope.
 
 **`device_error` deduplication.** `device_error` is a catch-all that PetKit raises *alongside* a specific condition (e.g. a full Pura MAX box also reports an error code) — firing both means two messages and two backoff streams for one problem. `process_alerts` mutes `device_error` for any device that has a concrete (non-error) alert active in the same poll (`devices_with_specific_alert`); the mute path silently `store.reset`s the key so no false "error cleared" message goes out. Standalone `device_error` (no specific alert) still fires normally. Evidence for this came from mining the git history of `state.json` (co-active keys with identical timestamps), not from reading Telegram — the Bot API can't read history.
 
@@ -73,20 +73,22 @@ One poll = login via `pypetkitapi` → `extract_alerts` per device → `process_
 - **New alert on an existing device**: emit a new `Alert(code=...)` from that device's extractor (both active and inactive states) + add the `code` to `RULE_LABELS`.
 - **New device type**: add `_extract_<type>_alerts`, dispatch it in `extract_alerts` by class name, add a `DEVICE_PHOTOS` entry, append `_extract_common_problem_alerts(...)`.
 
-## Cloud Run wrapper
+## VPS / Docker deployment
 
-`main.py` is a thin Flask entrypoint that exposes the one-shot poll as HTTP: `GET /` (health) and `GET|POST /poll` (runs one `notifier.main_async()` cycle, returns JSON status + exit code). `Procfile` runs it under gunicorn (`web: gunicorn ... main:app`). `.gcloudignore` trims the source upload. None of this affects a local `python notifier.py` run — the wrapper is additive.
+`runner.py` is the long-lived entrypoint: an internal loop that calls `notifier.main_async()` every `POLL_INTERVAL_MINUTES` (default 15), subtracting elapsed poll time from the sleep so cadence doesn't drift cumulatively (not wall-clock aligned like cron — acceptable for minute-scale backoff). It's additive, exactly like `main.py` (the old Cloud Run Flask wrapper, now deleted) was — `notifier.py` is untouched. `Dockerfile` is `python:3.11-slim` + `requirements.txt` + `notifier.py`/`runner.py`, `CMD python runner.py`. `docker-compose.yml` wires `env_file: .env` (4 secrets), non-secret env (region/tz/interval/`STATE_FILE=/data/state.json`), the `./data:/data` state volume, and `restart: unless-stopped`.
 
-Deploy is `gcloud run deploy --source .` (Cloud Build buildpacks → Artifact Registry repo `cloud-run-source-deploy`). The service is **private** (`--no-allow-unauthenticated`); Cloud Scheduler authenticates with an OIDC token (identity = the default compute service account, granted `roles/run.invoker` on the service + `secretAccessor` on the four secrets + `storage.objectAdmin` on the state bucket). Don't make it public — `/poll` triggers PetKit logins and Telegram sends, so an open endpoint is an abuse vector. `--max-instances=1` keeps polls from racing on shared GCS state.
+No HTTP endpoint is exposed (unlike Cloud Run's `/poll`) — the loop is self-contained, so there's no public-abuse surface. The Telegram "แก้แล้ว" button still works via `getUpdates` short-poll (no webhook needed). The VPS also runs an unrelated `byd-bot` container; `--max-instances`-style racing isn't a concern (single container, single state file).
 
-A Cloud Billing **budget** `petpoke-charge-alert` (10 THB, scoped to this project only) emails the billing admin at 10/50/100% of actual spend — a tripwire for leaving the free tier. Expected steady-state cost is 0. The billing account currency is **THB**; `gcloud billing budgets create` rejects a `USD` amount with a vague `INVALID_ARGUMENT`.
+**Deploy = copy runtime files + `docker compose up -d --build`** (see Commands). Don't copy `CLAUDE.md`/`.claude` to the server (global rule); the `tar` file-list and `.dockerignore` both exclude them. macOS `tar` emits AppleDouble `._*` files — strip them on the server after extract (`rm -f /opt/petpoke/._*`).
+
+GCP teardown is **complete**: Cloud Run service `petpoke`, Cloud Scheduler job `petpoke-poll`, GCS bucket `petpoke-notifier-state`, Cloud Build source bucket, Artifact Registry repo `cloud-run-source-deploy`, and the 4 Secret Manager secrets are all deleted. Only the (now-empty) project `petpoke-notifier` and its billing budget `petpoke-charge-alert` remain.
 
 ## State backend
 
 Two backends, selected at runtime in `load_state`/`save_state`:
-- **Local file** (default): `state.json`, used by `python notifier.py`.
-- **GCS** (Cloud Run): active when `STATE_BUCKET` is set — reads/writes `gs://$STATE_BUCKET/$STATE_OBJECT` (bucket `petpoke-notifier-state`, object `state.json`). `google-cloud-storage` is imported lazily inside the GCS helpers so the local path needs no GCP deps.
+- **Local file** (default + current VPS runtime): `state.json` / `STATE_FILE`. On the VPS this is `/data/state.json`, bind-mounted from `/opt/petpoke/data` so it survives container rebuilds.
+- **GCS** (legacy, unused): active when `STATE_BUCKET` is set — `google-cloud-storage` is imported lazily so the local/VPS path needs no GCP deps. Kept for runtime portability even though Cloud Run is gone.
 
-`main_async` snapshots the serialized store before the poll and **skips the write entirely when nothing changed** (`State unchanged; skipping write` log line). This keeps GCS Class-A writes to a handful per day, well inside the free tier. Don't remove the change-detection guard — without it every 15-min poll writes, ~2,880/mo.
+`main_async` snapshots the serialized store before the poll and **skips the write entirely when nothing changed** (`State unchanged; skipping write` log line). Don't remove the change-detection guard (cheap, avoids needless writes ~2,880/mo).
 
-The tracked `state.json` in git is now only a **historical artifact / local-run seed** — the GHA auto-commit (`chore: update state [skip ci]`) no longer runs since the workflow is disabled. The live cross-run state lives in GCS. The frequent state commits in `git log` are pre-migration noise. When migrating runtimes, seed the new backend from the current `state.json` (e.g. `gcloud storage cp state.json gs://petpoke-notifier-state/state.json`) so already-notified active alerts don't re-fire.
+The tracked `state.json` in git is only a **historical artifact / local-run seed**. The live cross-run state now lives in `/opt/petpoke/data/state.json` on the VPS (seeded from the old GCS object during migration). The frequent state commits in `git log` are pre-migration noise. When migrating runtimes, seed the new backend from the current state (e.g. `scp state.json personal-vps:/opt/petpoke/data/state.json`) so already-notified active alerts don't re-fire.
